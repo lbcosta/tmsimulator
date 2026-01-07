@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Simulador de Máquina de Turing</title>
+    
+    <!-- Bibliotecas Externas -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
+
+    <!-- Fontes -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <!-- Estilos Globais -->
+    <style>
+        :root {
+            --tape-cell-size: 56px;
+            --tape-gap: 8px; /* Tailwind mr-2 */
+        }
+        body { font-family: 'Inter', sans-serif; touch-action: none; overscroll-behavior: none; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        
+        /* Otimização de animação da fita */
+        .tape-container {
+            will-change: transform;
+        }
+        
+        .tape-cell { 
+            width: var(--tape-cell-size); 
+            height: var(--tape-cell-size); 
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); 
+        }
+        
+        @keyframes pulse-border {
+            0% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4); }
+            70% { box-shadow: 0 0 0 6px rgba(99, 102, 241, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
+        }
+        .needs-compile { animation: pulse-border 2s infinite; }
+        
+        /* Ajuste Mermaid Labels */
+        .edgeLabel { background-color: white; padding: 2px; border-radius: 4px; opacity: 0.95; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900 overflow-hidden h-screen w-screen selection:bg-indigo-100 selection:text-indigo-700">
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback, useMemo, memo } = React;
+
+        // --- CONSTANTES E CONFIGURAÇÕES ---
+        const MAX_HISTORY = 2000; // Limite de passos para evitar memory leak
+        const DEFAULT_CODE = `// Inversor de Bits (0 <-> 1)
+// Sintaxe: EstadoAtual  Lido/Escrito,Dir  ProxEstado
+
+q0  0/1,R  q0
+q0  1/0,R  q0
+q0  _/_,S  ha`;
+
+        const THEME = {
+            colors: {
+                primary: '#ea580c', // Laranja
+                success: '#10b981', // Verde Esmeralda
+                error:   '#ef4444', // Vermelho
+                stroke:  '#94a3b8', // Cinza
+                text:    '#312e81'  // Indigo Escuro
+            }
+        };
+
+        // Regex otimizado e compilado uma única vez
+        const SYNTAX_REGEX = /^(\w+)\s+([^\s\/]+)\s*\/\s*([^\s,]+)\s*,\s*([RLS])\s+(\w+)$/;
+
+        // --- HELPERS (Lógica Pura) ---
+
+        /**
+         * Realiza o parse do código fonte e retorna a estrutura de dados da máquina.
+         */
+        const parseMachineCode = (sourceCode) => {
+            const lines = sourceCode.split('\n');
+            const newTransitions = {};
+            const nodes = new Set();
+            const rawEdges = []; 
+            const errors = []; 
+
+            lines.forEach((line, index) => {
+                const trimmed = line.trim();
+                // Ignora linhas vazias ou comentários
+                if (!trimmed || /^(?:\/\/|#|;)/.test(trimmed)) return;
+
+                const match = trimmed.match(SYNTAX_REGEX);
+
+                if (match) {
+                    const [, from, read, write, move, to] = match;
+                    nodes.add(from);
+                    nodes.add(to);
+                    
+                    const rVis = read === '_' ? 'Δ' : read;
+                    const wVis = write === '_' ? 'Δ' : write;
+                    const label = `${rVis}/${wVis}, ${move}`;
+
+                    const key = `${from}:${read}`;
+                    
+                    // Detecção de não-determinismo
+                    if (newTransitions[key]) {
+                        errors.push(`Linha ${index + 1}: Conflito de regras para estado '${from}' lendo '${read}'.`);
+                    }
+
+                    newTransitions[key] = { from, write, move, to, label };
+                    rawEdges.push({ from, to, label });
+                } else {
+                    errors.push(`Linha ${index + 1}: Sintaxe inválida. Esperado: "q0  _/_,R  q1"`);
+                }
+            });
+
+            if (errors.length > 0) throw new Error(errors[0]);
+
+            // Agrupamento de arestas para o Mermaid (múltiplas regras na mesma linha)
+            const edgeMap = new Map();
+            rawEdges.forEach(edge => {
+                const key = `${edge.from}|${edge.to}`;
+                if (!edgeMap.has(key)) {
+                    edgeMap.set(key, { from: edge.from, to: edge.to, labels: [] });
+                }
+                edgeMap.get(key).labels.push(edge.label);
+            });
+
+            // Mapeia cada transição para o índice da aresta agrupada (para highlight)
+            const edges = Array.from(edgeMap.values());
+            const edgeIndexMap = new Map();
+            edges.forEach((edge, idx) => edgeIndexMap.set(`${edge.from}|${edge.to}`, idx));
+
+            Object.values(newTransitions).forEach(t => {
+                const edgeKey = `${t.from}|${t.to}`;
+                if (edgeIndexMap.has(edgeKey)) {
+                    t.edgeIndex = edgeIndexMap.get(edgeKey);
+                }
+            });
+
+            return { newTransitions, nodes: Array.from(nodes), edges };
+        };
+
+        /**
+         * Gera a string de definição do gráfico Mermaid.
+         */
+        const generateMermaidDefinition = (nodes, edges, currentState, status, activeEdgeIndex, activeLabel) => {
+            let def = 'flowchart LR\n';
+            
+            // Definição dos Nós
+            nodes.forEach(node => {
+                const label = formatStateLabel(node);
+                const shape = node === 'ha' ? `((("${label}")))` : `(["${label}"])`;
+                def += `    ${node}${shape}\n`;
+            });
+
+            // Definição das Arestas
+            edges.forEach(edge => {
+                const formattedLabels = edge.labels.map(l => {
+                    // Highlight apenas do texto da regra ativa
+                    if (activeLabel && l === activeLabel && edge.from === currentState) {
+                        return `<span style="color:${THEME.colors.primary};">${l}</span>`;
+                    }
+                    return l;
+                });
+                const combined = formattedLabels.join('<br/>');
+                def += `    ${edge.from} -->|"${combined}"| ${edge.to}\n`;
+            });
+
+            // Estilização
+            if (status === 'ACCEPTED') def += `\n    style ${currentState} fill:${THEME.colors.success},stroke:${THEME.colors.success},color:white,stroke-width:2px`;
+            else if (status === 'REJECTED') def += `\n    style ${currentState} fill:${THEME.colors.error},stroke:${THEME.colors.error},color:white,stroke-width:2px`;
+            else def += `\n    style ${currentState} fill:${THEME.colors.primary},stroke:#c2410c,color:white,stroke-width:3px`;
+
+            if (activeEdgeIndex !== null) {
+                def += `\n    linkStyle ${activeEdgeIndex} stroke:${THEME.colors.primary},stroke-width:3px;`;
+            }
+
+            return def;
+        };
+
+        const formatStateLabel = (name) => {
+            if (name === 'ha') return 'h<sub>a</sub>';
+            const match = name.match(/^q(\d+)$/);
+            return match ? `q<sub>${match[1]}</sub>` : name;
+        };
+
+        /**
+         * Aplica correções manuais no SVG gerado pelo Mermaid (ex: cor da seta).
+         */
+        const applySvgPostProcessing = (container, activeColor) => {
+            const svgElem = container.querySelector('svg');
+            if (!svgElem) return;
+
+            const links = svgElem.querySelectorAll('path');
+            links.forEach(link => {
+                const style = link.getAttribute('style') || '';
+                // Detecta a linha ativa pela cor injetada pelo linkStyle
+                // Mermaid converte hex para rgb em alguns casos
+                if (style.includes(activeColor) || style.includes('rgb(234, 88, 12)')) {
+                    const markerUrl = link.getAttribute('marker-end');
+                    if (markerUrl) {
+                        const markerIdMatch = markerUrl.match(/#([^"')\)]+)/);
+                        if (markerIdMatch && markerIdMatch[1]) {
+                            const markerId = markerIdMatch[1];
+                            const originalMarker = svgElem.getElementById(markerId);
+                            
+                            if (originalMarker) {
+                                // Clona o marcador para não pintar todas as setas
+                                const newMarkerId = markerId + '-active-' + Date.now();
+                                const newMarker = originalMarker.cloneNode(true);
+                                newMarker.setAttribute('id', newMarkerId);
+                                
+                                const paths = newMarker.querySelectorAll('path, circle, polygon');
+                                paths.forEach(p => {
+                                    p.setAttribute('fill', activeColor);
+                                    p.setAttribute('stroke', activeColor);
+                                });
+                                
+                                originalMarker.parentNode.appendChild(newMarker);
+                                link.setAttribute('marker-end', `url(#${newMarkerId})`);
+                            }
+                        }
+                    }
+                }
+            });
+        };
+
+        // --- COMPONENTES UI ---
+
+        const Icons = {
+            Play: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>,
+            Pause: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>,
+            SkipForward: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>,
+            SkipBack: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>,
+            RotateCcw: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>,
+            CheckCircle2: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>,
+            XCircle: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>,
+            AlertCircle: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>,
+            TriangleDown: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M0 0L10 10L20 0H0Z" /></svg>,
+            Cpu: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>,
+            Code: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>,
+            Terminal: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>,
+            InputLoad: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        };
+
+        const Header = memo(({ status, runtimeError, currentState, head, stepCount }) => (
+            <div className="flex flex-col bg-white shadow-sm z-20 border-b border-slate-200 shrink-0">
+                <div className="flex items-center justify-between px-6 py-3 bg-slate-50">
+                    <div className="flex items-center gap-3">
+                        <div className="bg-indigo-600 text-white p-1.5 rounded-lg shadow-sm">
+                            <Icons.Cpu size={20} />
+                        </div>
+                        <h1 className="text-lg font-bold text-slate-800 tracking-tight">TM Simulator</h1>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        {status === 'ACCEPTED' && <span className="flex items-center gap-2 text-emerald-700 font-bold px-3 py-1 bg-emerald-100 border border-emerald-200 rounded-full text-xs animate-in fade-in"><Icons.CheckCircle2 size={16}/> ACEITA</span>}
+                        {status === 'REJECTED' && <span className="flex items-center gap-2 text-rose-700 font-bold px-3 py-1 bg-rose-100 border border-rose-200 rounded-full text-xs animate-in fade-in"><Icons.XCircle size={16}/> REJEITADA</span>}
+                        {runtimeError && <span className="flex items-center gap-2 text-rose-600 text-xs font-medium bg-white px-3 py-1 rounded-full border border-rose-200 shadow-sm"><Icons.AlertCircle size={14}/> {runtimeError}</span>}
+                        
+                        <div className="h-6 w-px bg-slate-300 mx-1"></div>
+                        
+                        <div className="text-xs text-slate-500 font-mono bg-white px-3 py-1 rounded-full border border-slate-200 shadow-sm flex gap-3">
+                            <span>Estado: <b className="text-indigo-600">{currentState}</b></span>
+                            <span>Head: <b className="text-indigo-600">{head}</b></span>
+                            <span>Passos: <b className="text-indigo-600">{stepCount}</b></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        ));
+
+        const TapeVisualizer = memo(({ tape, head, status }) => {
+            // Constantes de layout
+            const CELL_WIDTH = 56;
+            const CELL_MARGIN = 8;
+            const TOTAL_CELL_WIDTH = CELL_WIDTH + CELL_MARGIN;
+            const CENTER_OFFSET = TOTAL_CELL_WIDTH / 2; // Centralizar
+
+            return (
+                <div className="relative w-full bg-slate-100/50 h-28 border-b border-slate-200 shadow-inner overflow-hidden">
+                    {/* Efeitos de Fading */}
+                    <div className="absolute left-0 top-0 bottom-0 w-24 z-20 bg-gradient-to-r from-slate-100 to-transparent pointer-events-none"/>
+                    <div className="absolute right-0 top-0 bottom-0 w-24 z-20 bg-gradient-to-l from-slate-100 to-transparent pointer-events-none"/>
+                    
+                    {/* Ponteiro Fixo */}
+                    <div className="absolute top-0 left-1/2 -translate-x-1/2 z-30 text-indigo-500 drop-shadow-md mt-1">
+                        <Icons.TriangleDown width="24" height="12" />
+                    </div>
+
+                    {/* Fita Móvel */}
+                    <div 
+                        className="flex items-center h-full absolute top-0 left-1/2 transition-transform duration-300 ease-in-out tape-container"
+                        style={{ transform: `translateX(calc(-${head * TOTAL_CELL_WIDTH}px - ${CENTER_OFFSET}px))` }}
+                    >
+                        {Array.from({ length: Math.max(head + 15, 30) }).map((_, idx) => {
+                            const char = tape[idx] || '_';
+                            const isHead = idx === head;
+                            
+                            let stateStyle = "border-slate-300 bg-white text-slate-400";
+                            if (isHead) {
+                                if (status === 'REJECTED') stateStyle = "border-rose-500 bg-rose-50 text-rose-700 shadow-lg shadow-rose-200/50 scale-110";
+                                else if (status === 'ACCEPTED') stateStyle = "border-emerald-500 bg-emerald-50 text-emerald-700 shadow-lg shadow-emerald-200/50 scale-110";
+                                else stateStyle = "border-indigo-500 bg-white text-indigo-700 shadow-xl shadow-indigo-200/50 scale-110";
+                            }
+
+                            return (
+                                <div key={idx} className="flex flex-col items-center justify-center shrink-0 mr-2" style={{ width: '56px' }}>
+                                    <div className={`tape-cell rounded-xl flex items-center justify-center text-2xl font-mono font-medium border-2 ${stateStyle}`}>
+                                        {char === '_' ? <span className="opacity-20">Δ</span> : char}
+                                    </div>
+                                    <div className={`text-[10px] mt-2 font-mono transition-colors ${isHead ? 'text-indigo-600 font-bold' : 'text-slate-300'}`}>{idx}</div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            );
+        });
+
+        const EditorPanel = memo(({ editorCode, setEditorCode, inputString, setInputString, onResetInput, onCompile, isDirty, compileError, status }) => {
+            const statusUI = useMemo(() => {
+                if (isDirty) return { color: "bg-amber-400", text: "Alterações não compiladas", textClass: "text-amber-600" };
+                if (compileError) return { color: "bg-rose-500", text: compileError, textClass: "text-rose-600" };
+                return { color: "bg-emerald-500", text: "Código compilado com sucesso", textClass: "text-emerald-600" };
+            }, [isDirty, compileError]);
+
+            return (
+                <div className="w-[35%] min-w-[360px] bg-white border-r border-slate-200 flex flex-col z-10 shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
+                    <div className="p-5 bg-slate-50 border-b border-slate-100 flex flex-col gap-4">
+                        <div>
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5 tracking-wider">Entrada</label>
+                            <div className="flex gap-2">
+                                <input 
+                                    type="text" 
+                                    value={inputString} 
+                                    onChange={(e) => setInputString(e.target.value)} 
+                                    disabled={status === 'RUNNING'} 
+                                    className="flex-1 px-4 py-2 border border-slate-200 rounded-lg font-mono text-sm bg-white text-slate-700 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition shadow-sm placeholder:text-slate-300" 
+                                    placeholder="ex: aaabbb"
+                                />
+                                <button onClick={onResetInput} title="Carregar Entrada" aria-label="Carregar Entrada" className="px-3 bg-white border border-slate-200 text-slate-600 rounded-lg hover:bg-slate-50 hover:text-indigo-600 transition shadow-sm">
+                                    <Icons.InputLoad size={18} />
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex-1 flex flex-col relative group bg-slate-50 overflow-hidden">
+                        <div className="flex items-center justify-between px-4 py-2 bg-slate-100 border-b border-slate-200">
+                            <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider flex items-center gap-2"><Icons.Terminal size={12}/> Editor</span>
+                            {isDirty && <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-100">Não Salvo</span>}
+                        </div>
+                        <textarea value={editorCode} onChange={(e) => setEditorCode(e.target.value)} className="flex-1 w-full p-6 font-mono text-sm resize-none focus:outline-none bg-slate-50 text-slate-700 leading-relaxed" spellCheck="false"/>
+                        
+                        <div className="bg-white px-5 py-3 text-[10px] border-t border-slate-100 font-mono flex items-center gap-2 overflow-hidden">
+                            <span className={`w-2 h-2 rounded-full shrink-0 transition-colors duration-300 ${statusUI.color}`}></span>
+                            <span className={`truncate transition-colors duration-300 ${statusUI.textClass}`} title={statusUI.text}>
+                                {statusUI.text}
+                            </span>
+                        </div>
+                    </div>
+                    <div className="p-4 bg-white border-t border-slate-200 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-20">
+                        <button onClick={onCompile} aria-label="Compilar Código" className={`w-full py-3 rounded-lg text-sm font-bold tracking-wide uppercase transition-all shadow-md active:scale-[0.98] flex items-center justify-center gap-2 ${isDirty ? 'bg-indigo-600 hover:bg-indigo-700 text-white needs-compile shadow-indigo-200' : 'bg-slate-800 hover:bg-slate-900 text-slate-200'}`}>
+                            <Icons.Code size={18} /> Compilar
+                        </button>
+                    </div>
+                </div>
+            );
+        });
+
+        const DiagramVisualizer = ({ visualData, currentState, tape, head, transitions, status, compileError }) => {
+            const containerRef = useRef(null);
+            const diagramRef = useRef(null);
+            const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
+            const isDragging = useRef(false);
+            const lastPos = useRef({ x: 0, y: 0 });
+            const lastDist = useRef(null);
+
+            // Handlers de Zoom e Pan (Mesma lógica robusta)
+            const handleWheel = (e) => {
+                e.preventDefault();
+                if (!containerRef.current) return;
+                const rect = containerRef.current.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+                const delta = e.deltaY > 0 ? 0.9 : 1.1;
+                const newScale = Math.min(Math.max(0.2, transform.scale * delta), 4);
+                const newX = mouseX - (mouseX - transform.x) * (newScale / transform.scale);
+                const newY = mouseY - (mouseY - transform.y) * (newScale / transform.scale);
+                setTransform({ x: newX, y: newY, scale: newScale });
+            };
+
+            const handleMouseDown = (e) => { isDragging.current = true; lastPos.current = { x: e.clientX, y: e.clientY }; };
+            const handleMouseUp = () => { isDragging.current = false; };
+            const handleMouseMove = (e) => {
+                if (!isDragging.current) return;
+                const dx = e.clientX - lastPos.current.x;
+                const dy = e.clientY - lastPos.current.y;
+                lastPos.current = { x: e.clientX, y: e.clientY };
+                setTransform(prev => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
+            };
+
+            const handleTouchStart = (e) => {
+                if (e.touches.length === 2) {
+                    lastDist.current = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+                } else if (e.touches.length === 1) {
+                    isDragging.current = true;
+                    lastPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+                }
+            };
+
+            const handleTouchMove = (e) => {
+                e.preventDefault();
+                if (e.touches.length === 2 && lastDist.current) {
+                    const dist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+                    const rect = containerRef.current.getBoundingClientRect();
+                    const centerX = ((e.touches[0].clientX + e.touches[1].clientX) / 2) - rect.left;
+                    const centerY = ((e.touches[0].clientY + e.touches[1].clientY) / 2) - rect.top;
+                    const scaleFactor = dist / lastDist.current;
+                    const newScale = Math.min(Math.max(0.2, transform.scale * scaleFactor), 4);
+                    const newX = centerX - (centerX - transform.x) * (newScale / transform.scale);
+                    const newY = centerY - (centerY - transform.y) * (newScale / transform.scale);
+                    setTransform({ x: newX, y: newY, scale: newScale });
+                    lastDist.current = dist;
+                } else if (e.touches.length === 1 && isDragging.current) {
+                    const dx = e.touches[0].clientX - lastPos.current.x;
+                    const dy = e.touches[0].clientY - lastPos.current.y;
+                    lastPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+                    setTransform(prev => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
+                }
+            };
+
+            const handleTouchEnd = () => { isDragging.current = false; lastDist.current = null; };
+
+            // Efeito para Renderização do Mermaid
+            useEffect(() => {
+                if (visualData.nodes.length > 0 && diagramRef.current) {
+                    const render = async () => {
+                        try {
+                            // 1. Determinar estado ativo
+                            let activeLabel = null;
+                            let activeEdgeIndex = null;
+
+                            if (status !== 'ACCEPTED' && status !== 'REJECTED') {
+                                const currentSymbol = tape[head] || '_';
+                                const key = `${currentState}:${currentSymbol}`;
+                                const rule = transitions[key];
+                                if (rule) {
+                                    activeLabel = rule.label;
+                                    activeEdgeIndex = rule.edgeIndex;
+                                }
+                            }
+
+                            // 2. Gerar Definição Mermaid
+                            const mermaidDef = generateMermaidDefinition(
+                                visualData.nodes, 
+                                visualData.edges, 
+                                currentState, 
+                                status, 
+                                activeEdgeIndex, 
+                                activeLabel
+                            );
+
+                            // 3. Renderizar SVG
+                            diagramRef.current.removeAttribute('data-processed');
+                            const { svg } = await mermaid.render('mermaid-svg-' + Date.now(), mermaidDef);
+                            diagramRef.current.innerHTML = svg;
+
+                            // 4. Pós-processamento (Colorir Arrowheads)
+                            applySvgPostProcessing(diagramRef.current, THEME.colors.primary);
+
+                        } catch (e) {
+                            console.error("Mermaid Render Error:", e);
+                        }
+                    };
+                    render();
+                }
+            }, [visualData, currentState, status, tape, head, transitions]);
+
+            return (
+                <div className="flex-1 flex flex-col bg-slate-50/50 relative overflow-hidden">
+                    <div 
+                        className="flex-1 overflow-hidden relative cursor-grab active:cursor-grabbing bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] bg-fixed touch-none select-none [&_*]:cursor-inherit"
+                        onWheel={handleWheel} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
+                        onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}
+                        ref={containerRef}
+                    >
+                        <div 
+                            className="absolute origin-top-left transition-transform duration-75 ease-out flex items-center justify-center w-full h-full"
+                            style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})` }}
+                        >
+                            {compileError ? (
+                                <div className="bg-white/90 backdrop-blur-md p-6 rounded-2xl border border-rose-200 shadow-xl max-w-md text-center pointer-events-auto scale-[1!important]">
+                                    <div className="text-rose-500 mb-2 flex justify-center"><Icons.AlertCircle size={32}/></div>
+                                    <h3 className="text-rose-700 font-bold mb-1">Erro de Compilação</h3>
+                                    <p className="text-rose-600/80 text-sm font-mono break-words">{compileError}</p>
+                                </div>
+                            ) : <div ref={diagramRef} className="origin-center" />}
+                            
+                            {visualData.nodes.length === 0 && !compileError && (
+                                <div className="text-slate-300 flex flex-col items-center">
+                                    <Icons.Cpu size={48} className="mb-3 opacity-20"/>
+                                    <p className="font-medium">Sem diagrama.</p>
+                                </div>
+                            )}
+                        </div>
+                        <div className="absolute top-4 right-4 pointer-events-none opacity-30 text-[10px] text-slate-500 font-mono">Scroll/Pinch para Zoom</div>
+                    </div>
+                </div>
+            );
+        };
+
+        const PlaybackControls = ({ onStepBack, onStepForward, onPlayPause, status, speed, setSpeed, historyLength }) => (
+            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-30">
+                <div className="bg-white/90 backdrop-blur-xl border border-white/40 shadow-[0_8px_32px_rgba(99,102,241,0.15)] rounded-2xl p-2 px-6 flex items-center gap-6 ring-1 ring-slate-900/5">
+                    <div className="flex items-center gap-3 border-r border-slate-200/60 pr-6 py-1">
+                        <button onClick={onStepBack} disabled={historyLength === 0 || status === 'RUNNING'} aria-label="Passo Anterior" className="p-2.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full disabled:opacity-30 transition-all"><Icons.SkipBack size={20} /></button>
+                        <button onClick={onPlayPause} disabled={status === 'ACCEPTED' || status === 'REJECTED'} aria-label={status === 'RUNNING' ? "Pausar" : "Executar"} className={`w-14 h-14 flex items-center justify-center rounded-2xl shadow-lg transition-all active:scale-95 border-b-4 ${status === 'RUNNING' ? 'bg-amber-100 text-amber-600 border-amber-200 hover:bg-amber-200' : 'bg-indigo-600 text-white border-indigo-800 hover:bg-indigo-700'} disabled:opacity-50 disabled:grayscale disabled:border-transparent disabled:shadow-none`}>
+                            {status === 'RUNNING' ? <Icons.Pause size={28} fill="currentColor"/> : <Icons.Play size={28} fill="currentColor" className="ml-1"/>}
+                        </button>
+                        <button onClick={onStepForward} disabled={status === 'RUNNING' || status === 'ACCEPTED' || status === 'REJECTED'} aria-label="Próximo Passo" className="p-2.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full disabled:opacity-30 transition-all"><Icons.SkipForward size={20} /></button>
+                    </div>
+                    <div className="flex flex-col w-36 gap-1.5">
+                        <div className="flex justify-between text-[9px] text-slate-400 font-bold uppercase tracking-widest"><span>Lento</span><span>Rápido</span></div>
+                        <div className="relative h-4 flex items-center">
+                            <input type="range" min="0" max="950" step="50" value={speed} onChange={(e) => setSpeed(Number(e.target.value))} aria-label="Controle de Velocidade" className="w-full h-1.5 bg-slate-200 rounded-full appearance-none cursor-pointer accent-indigo-600" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+
+        // --- Componente Principal ---
+        const TuringMachineSimulator = () => {
+            const [editorCode, setEditorCode] = useState(DEFAULT_CODE);
+            const [isDirty, setIsDirty] = useState(false);
+            const [inputString, setInputString] = useState('10110');
+            
+            // Estado da Máquina
+            const [tape, setTape] = useState({});
+            const [head, setHead] = useState(0);
+            const [currentState, setCurrentState] = useState('q0');
+            const [status, setStatus] = useState('IDLE');
+            const [stepCount, setStepCount] = useState(0);
+            const [runtimeError, setRuntimeError] = useState(null);
+            const [history, setHistory] = useState([]);
+            
+            // Estado de Execução
+            const [speed, setSpeed] = useState(500);
+            const [transitions, setTransitions] = useState({});
+            const [visualData, setVisualData] = useState({ nodes: [], edges: [] });
+            const [compileError, setCompileError] = useState(null);
+
+            // Configuração Mermaid
+            useEffect(() => {
+                mermaid.initialize({
+                    startOnLoad: false,
+                    theme: 'base',
+                    securityLevel: 'loose',
+                    flowchart: { curve: 'basis', htmlLabels: true, useMaxWidth: false },
+                    themeVariables: {
+                        primaryColor: '#e0e7ff',
+                        primaryTextColor: '#312e81',
+                        primaryBorderColor: '#6366f1',
+                        lineColor: '#94a3b8',
+                        secondaryColor: '#f1f5f9',
+                        tertiaryColor: '#fff',
+                    }
+                });
+                compileAndReset(); // Compilação inicial
+            }, []); // Rodar apenas na montagem
+
+            const handleEditorChange = useCallback((val) => {
+                setEditorCode(val);
+                setIsDirty(true);
+            }, []);
+
+            const compileAndReset = useCallback(() => {
+                try {
+                    const { newTransitions, nodes, edges } = parseMachineCode(editorCode);
+                    if (nodes.length === 0) throw new Error("Nenhum estado válido encontrado.");
+
+                    setTransitions(newTransitions);
+                    setVisualData({ nodes, edges });
+                    setCompileError(null);
+                    setIsDirty(false);
+
+                    // Reset Machine
+                    const initialTape = {};
+                    for (let i = 0; i < inputString.length; i++) initialTape[i] = inputString[i];
+                    setTape(initialTape);
+                    setHead(0);
+                    setStepCount(0);
+                    setCurrentState('q0');
+                    setHistory([]);
+                    setStatus('IDLE');
+                    setRuntimeError(null);
+                } catch (err) {
+                    setCompileError(err.message);
+                    setVisualData({ nodes: [], edges: [] }); // Limpa diagrama
+                    setIsDirty(false); // Mostra erro
+                }
+            }, [editorCode, inputString]);
+
+            const resetTapeOnly = useCallback(() => {
+                const initialTape = {};
+                for (let i = 0; i < inputString.length; i++) initialTape[i] = inputString[i];
+                setTape(initialTape);
+                setHead(0);
+                setStepCount(0);
+                setCurrentState('q0');
+                setHistory([]);
+                setStatus('IDLE');
+                setRuntimeError(null);
+            }, [inputString]);
+
+            const stepForward = useCallback(() => {
+                if (status === 'ACCEPTED' || status === 'REJECTED') return;
+                
+                const currentSymbol = tape[head] || '_';
+                const key = `${currentState}:${currentSymbol}`;
+                const rule = transitions[key];
+                
+                const historyState = { tape: { ...tape }, head, currentState, status, stepCount };
+
+                if (!rule) {
+                    if (currentState === 'ha') setStatus('ACCEPTED');
+                    else {
+                        setStatus('REJECTED');
+                        setRuntimeError(`Sem transição para (${currentState}, ${currentSymbol})`);
+                    }
+                    // Limite de histórico para evitar memory leaks
+                    setHistory(prev => [...prev.slice(-MAX_HISTORY), historyState]);
+                    return;
+                }
+
+                const newTape = { ...tape };
+                if (rule.write === '_') delete newTape[head];
+                else newTape[head] = rule.write;
+
+                let newHead = head;
+                if (rule.move === 'R') newHead++;
+                else if (rule.move === 'L') newHead--;
+
+                if (newHead < 0) {
+                    setStatus('REJECTED');
+                    setRuntimeError("Crash: Limite esquerdo da fita.");
+                    setHistory(prev => [...prev.slice(-MAX_HISTORY), historyState]);
+                    return;
+                }
+
+                setTape(newTape);
+                setHead(newHead);
+                setStepCount(c => c + 1);
+                setCurrentState(rule.to);
+                setHistory(prev => [...prev.slice(-MAX_HISTORY), historyState]);
+
+                if (rule.to === 'ha') setStatus('ACCEPTED');
+            }, [tape, head, currentState, status, transitions, stepCount]);
+
+            const stepBack = useCallback(() => {
+                if (history.length === 0) return;
+                const prev = history[history.length - 1];
+                setTape(prev.tape);
+                setHead(prev.head);
+                setCurrentState(prev.currentState);
+                setStepCount(prev.stepCount);
+                setStatus('PAUSED');
+                setRuntimeError(null);
+                setHistory(prevHist => prevHist.slice(0, -1));
+            }, [history]);
+
+            useEffect(() => {
+                let interval;
+                if (status === 'RUNNING') {
+                    const delay = 1000 - speed;
+                    interval = setInterval(stepForward, Math.max(50, delay));
+                }
+                return () => clearInterval(interval);
+            }, [status, speed, stepForward]);
+
+            return (
+                <div className="flex flex-col h-screen w-screen bg-white">
+                    <Header status={status} runtimeError={runtimeError} currentState={currentState} head={head} stepCount={stepCount} />
+                    <TapeVisualizer tape={tape} head={head} status={status} />
+                    
+                    <div className="flex flex-1 overflow-hidden">
+                        <EditorPanel 
+                            editorCode={editorCode} 
+                            setEditorCode={handleEditorChange} 
+                            inputString={inputString} 
+                            setInputString={setInputString} 
+                            onResetInput={resetTapeOnly}
+                            onCompile={compileAndReset}
+                            isDirty={isDirty}
+                            compileError={compileError}
+                            status={status}
+                        />
+                        
+                        <div className="flex-1 flex flex-col relative overflow-hidden">
+                            <DiagramVisualizer 
+                                visualData={visualData} 
+                                currentState={currentState} 
+                                tape={tape} 
+                                head={head} 
+                                transitions={transitions} 
+                                status={status} 
+                                compileError={compileError}
+                            />
+                            
+                            <PlaybackControls 
+                                onStepBack={stepBack} 
+                                onStepForward={stepForward} 
+                                onPlayPause={() => setStatus(s => s === 'RUNNING' ? 'PAUSED' : 'RUNNING')} 
+                                status={status} 
+                                speed={speed} 
+                                setSpeed={setSpeed} 
+                                historyLength={history.length}
+                            />
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<TuringMachineSimulator />);
+    </script>
+</body>
+</html>
