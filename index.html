@@ -3,8 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Simulador de Máquina de Turing</title>
+    <title>Máquina de Turing</title>
     
+    <!-- Favicon (SVG Data URI - CPU Icon) -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234f46e5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='4' width='16' height='16' rx='2' ry='2'/%3E%3Crect x='9' y='9' width='6' height='6'/%3E%3Cline x1='9' y1='1' x2='9' y2='4'/%3E%3Cline x1='15' y1='1' x2='15' y2='4'/%3E%3Cline x1='9' y1='20' x2='9' y2='23'/%3E%3Cline x1='15' y1='20' x2='15' y2='23'/%3E%3Cline x1='20' y1='9' x2='23' y2='9'/%3E%3Cline x1='20' y1='14' x2='23' y2='14'/%3E%3Cline x1='1' y1='9' x2='4' y2='9'/%3E%3Cline x1='1' y1='14' x2='4' y2='14'/%3E%3C/svg%3E" type="image/svg+xml">
+
     <!-- Bibliotecas Externas -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
@@ -244,7 +247,8 @@ q0  _/_,S  ha`;
             Cpu: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>,
             Code: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>,
             Terminal: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>,
-            InputLoad: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            // Ícone de Upload (Seta para cima)
+            InputLoad: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
         };
 
         const Header = memo(({ status, runtimeError, currentState, head, stepCount }) => (
@@ -600,8 +604,8 @@ q0  _/_,S  ha`;
                     setRuntimeError(null);
                 } catch (err) {
                     setCompileError(err.message);
-                    setVisualData({ nodes: [], edges: [] }); // Limpa diagrama
-                    setIsDirty(false); // Mostra erro
+                    setVisualData({ nodes: [], edges: [] });
+                    setIsDirty(false);
                 }
             }, [editorCode, inputString]);
 
@@ -632,7 +636,6 @@ q0  _/_,S  ha`;
                         setStatus('REJECTED');
                         setRuntimeError(`Sem transição para (${currentState}, ${currentSymbol})`);
                     }
-                    // Limite de histórico para evitar memory leaks
                     setHistory(prev => [...prev.slice(-MAX_HISTORY), historyState]);
                     return;
                 }
@@ -670,7 +673,7 @@ q0  _/_,S  ha`;
                 setStepCount(prev.stepCount);
                 setStatus('PAUSED');
                 setRuntimeError(null);
-                setHistory(prevHist => prevHist.slice(0, -1));
+                setHistory(prev => prev.slice(0, -1));
             }, [history]);
 
             useEffect(() => {
