@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Máquina de Turing</title>
     
-    <!-- Favicon (SVG Data URI - CPU Icon) -->
+    <!-- Favicon (SVG Data URI) -->
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234f46e5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='4' width='16' height='16' rx='2' ry='2'/%3E%3Crect x='9' y='9' width='6' height='6'/%3E%3Cline x1='9' y1='1' x2='9' y2='4'/%3E%3Cline x1='15' y1='1' x2='15' y2='4'/%3E%3Cline x1='9' y1='20' x2='9' y2='23'/%3E%3Cline x1='15' y1='20' x2='15' y2='23'/%3E%3Cline x1='20' y1='9' x2='23' y2='9'/%3E%3Cline x1='20' y1='14' x2='23' y2='14'/%3E%3Cline x1='1' y1='9' x2='4' y2='9'/%3E%3Cline x1='1' y1='14' x2='4' y2='14'/%3E%3C/svg%3E" type="image/svg+xml">
 
     <!-- Bibliotecas Externas -->
@@ -21,23 +21,27 @@
     <!-- Estilos Globais -->
     <style>
         :root {
-            --tape-cell-size: 56px;
-            --tape-gap: 8px; /* Tailwind mr-2 */
+            --tape-size: 56px;
+            --tape-margin: 8px; /* Tailwind mr-2 equivalent */
         }
-        body { font-family: 'Inter', sans-serif; touch-action: none; overscroll-behavior: none; }
+        
+        body { 
+            font-family: 'Inter', sans-serif; 
+            touch-action: none; 
+            overscroll-behavior: none; 
+        }
+        
         .font-mono { font-family: 'JetBrains Mono', monospace; }
         
-        /* Otimização de animação da fita */
-        .tape-container {
-            will-change: transform;
-        }
+        .tape-container { will-change: transform; }
         
         .tape-cell { 
-            width: var(--tape-cell-size); 
-            height: var(--tape-cell-size); 
+            width: var(--tape-size); 
+            height: var(--tape-size); 
             transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); 
         }
         
+        /* Animação de pulso para feedback de ação */
         @keyframes pulse-border {
             0% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4); }
             70% { box-shadow: 0 0 0 6px rgba(99, 102, 241, 0); }
@@ -45,8 +49,9 @@
         }
         .needs-compile { animation: pulse-border 2s infinite; }
         
-        /* Ajuste Mermaid Labels */
-        .edgeLabel { background-color: white; padding: 2px; border-radius: 4px; opacity: 0.95; }
+        /* Ajustes para o Mermaid (Compatibilidade iPad/Safari) */
+        .edgeLabel { background-color: white; opacity: 0.95; padding: 2px; }
+        g.edgeLabel > g > foreignObject > div { background-color: white; }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-900 overflow-hidden h-screen w-screen selection:bg-indigo-100 selection:text-indigo-700">
@@ -56,8 +61,27 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback, useMemo, memo } = React;
 
-        // --- CONSTANTES E CONFIGURAÇÕES ---
-        const MAX_HISTORY = 2000; // Limite de passos para evitar memory leak
+        // ==========================================
+        // CONFIGURAÇÃO & CONSTANTES
+        // ==========================================
+        
+        const CONFIG = {
+            MAX_HISTORY: 2000,
+            TAPE_CELL_WIDTH: 56,
+            TAPE_CELL_MARGIN: 8,
+            // Regex compilado para performance
+            SYNTAX_REGEX: /^(\w+)\s+([^\s\/]+)\s*\/\s*([^\s,]+)\s*,\s*([RLS])\s+(\w+)$/
+        };
+
+        const THEME = {
+            primary: '#ea580c', // Laranja
+            success: '#10b981', // Verde Esmeralda
+            error:   '#ef4444', // Vermelho
+            stroke:  '#94a3b8', // Cinza
+            text:    '#312e81', // Indigo Escuro
+            bg_highlight: '#ffedd5' // Laranja claro
+        };
+
         const DEFAULT_CODE = `// Inversor de Bits (0 <-> 1)
 // Sintaxe: EstadoAtual  Lido/Escrito,Dir  ProxEstado
 
@@ -65,23 +89,35 @@ q0  0/1,R  q0
 q0  1/0,R  q0
 q0  _/_,S  ha`;
 
-        const THEME = {
-            colors: {
-                primary: '#ea580c', // Laranja
-                success: '#10b981', // Verde Esmeralda
-                error:   '#ef4444', // Vermelho
-                stroke:  '#94a3b8', // Cinza
-                text:    '#312e81'  // Indigo Escuro
-            }
+        const SUBSCRIPT_MAP = {
+            '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄',
+            '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉',
+            'a': 'ₐ', 'e': 'ₑ', 'h': 'ₕ', 'i': 'ᵢ', 'k': 'ₖ',
+            'l': 'ₗ', 'm': 'ₘ', 'n': 'ₙ', 'o': 'ₒ', 'p': 'ₚ',
+            'r': 'ᵣ', 's': 'ₛ', 't': 'ₜ', 'u': 'ᵤ', 'v': 'ᵥ', 'x': 'ₓ'
         };
 
-        // Regex otimizado e compilado uma única vez
-        const SYNTAX_REGEX = /^(\w+)\s+([^\s\/]+)\s*\/\s*([^\s,]+)\s*,\s*([RLS])\s+(\w+)$/;
-
-        // --- HELPERS (Lógica Pura) ---
+        // ==========================================
+        // UTILS & PARSING
+        // ==========================================
 
         /**
-         * Realiza o parse do código fonte e retorna a estrutura de dados da máquina.
+         * Formata nomes de estado para exibição (ex: q0 -> q₀)
+         * Usa Unicode para compatibilidade total com iPad/Safari (evita tags HTML)
+         */
+        const formatStateLabel = (name) => {
+            if (name === 'ha') return 'hₐ';
+            const match = name.match(/^([a-zA-Z])(\w+)$/);
+            if (match) {
+                const base = match[1];
+                const sub = match[2].split('').map(c => SUBSCRIPT_MAP[c] || c).join('');
+                return `${base}${sub}`;
+            }
+            return name;
+        };
+
+        /**
+         * Analisa o código fonte e gera a estrutura lógica da máquina.
          */
         const parseMachineCode = (sourceCode) => {
             const lines = sourceCode.split('\n');
@@ -92,37 +128,38 @@ q0  _/_,S  ha`;
 
             lines.forEach((line, index) => {
                 const trimmed = line.trim();
-                // Ignora linhas vazias ou comentários
-                if (!trimmed || /^(?:\/\/|#|;)/.test(trimmed)) return;
+                if (!trimmed || /^(?:\/\/|#|;)/.test(trimmed)) return; // Ignora comentários
 
-                const match = trimmed.match(SYNTAX_REGEX);
+                const match = trimmed.match(CONFIG.SYNTAX_REGEX);
 
                 if (match) {
                     const [, from, read, write, move, to] = match;
                     nodes.add(from);
                     nodes.add(to);
                     
+                    // Visual Labels
                     const rVis = read === '_' ? 'Δ' : read;
                     const wVis = write === '_' ? 'Δ' : write;
                     const label = `${rVis}/${wVis}, ${move}`;
 
+                    // Logic Key
                     const key = `${from}:${read}`;
                     
-                    // Detecção de não-determinismo
+                    // Check determinism
                     if (newTransitions[key]) {
-                        errors.push(`Linha ${index + 1}: Conflito de regras para estado '${from}' lendo '${read}'.`);
+                        errors.push(`Linha ${index + 1}: Conflito! Já existe regra para '${from}' lendo '${read}'.`);
                     }
 
                     newTransitions[key] = { from, write, move, to, label };
                     rawEdges.push({ from, to, label });
                 } else {
-                    errors.push(`Linha ${index + 1}: Sintaxe inválida. Esperado: "q0  _/_,R  q1"`);
+                    errors.push(`Linha ${index + 1}: Erro de sintaxe. Use: "q0  _/_,R  q1"`);
                 }
             });
 
             if (errors.length > 0) throw new Error(errors[0]);
 
-            // Agrupamento de arestas para o Mermaid (múltiplas regras na mesma linha)
+            // Agrupa arestas visuais (mesma origem e destino)
             const edgeMap = new Map();
             rawEdges.forEach(edge => {
                 const key = `${edge.from}|${edge.to}`;
@@ -132,7 +169,7 @@ q0  _/_,S  ha`;
                 edgeMap.get(key).labels.push(edge.label);
             });
 
-            // Mapeia cada transição para o índice da aresta agrupada (para highlight)
+            // Mapeia transições lógicas para índices de aresta visual
             const edges = Array.from(edgeMap.values());
             const edgeIndexMap = new Map();
             edges.forEach((edge, idx) => edgeIndexMap.set(`${edge.from}|${edge.to}`, idx));
@@ -148,61 +185,55 @@ q0  _/_,S  ha`;
         };
 
         /**
-         * Gera a string de definição do gráfico Mermaid.
+         * Gera definição MermaidJS.
+         * htmlLabels: false é CRÍTICO para suporte a iPad.
          */
-        const generateMermaidDefinition = (nodes, edges, currentState, status, activeEdgeIndex, activeLabel) => {
+        const generateMermaidDefinition = (nodes, edges, currentState, status, activeEdgeIndex) => {
             let def = 'flowchart LR\n';
             
-            // Definição dos Nós
             nodes.forEach(node => {
                 const label = formatStateLabel(node);
-                const shape = node === 'ha' ? `((("${label}")))` : `(["${label}"])`;
-                def += `    ${node}${shape}\n`;
+                const shapeStart = node === 'ha' ? '((("' : '(["';
+                const shapeEnd = node === 'ha' ? '")))' : '"])';
+                def += `    ${node}${shapeStart}${label}${shapeEnd}\n`;
             });
 
-            // Definição das Arestas
             edges.forEach(edge => {
-                const formattedLabels = edge.labels.map(l => {
-                    // Highlight apenas do texto da regra ativa
-                    if (activeLabel && l === activeLabel && edge.from === currentState) {
-                        return `<span style="color:${THEME.colors.primary};">${l}</span>`;
-                    }
-                    return l;
-                });
-                const combined = formattedLabels.join('<br/>');
+                const combined = edge.labels.join('\n');
                 def += `    ${edge.from} -->|"${combined}"| ${edge.to}\n`;
             });
 
-            // Estilização
-            if (status === 'ACCEPTED') def += `\n    style ${currentState} fill:${THEME.colors.success},stroke:${THEME.colors.success},color:white,stroke-width:2px`;
-            else if (status === 'REJECTED') def += `\n    style ${currentState} fill:${THEME.colors.error},stroke:${THEME.colors.error},color:white,stroke-width:2px`;
-            else def += `\n    style ${currentState} fill:${THEME.colors.primary},stroke:#c2410c,color:white,stroke-width:3px`;
+            // Styling
+            if (status === 'ACCEPTED') def += `\n    style ${currentState} fill:${THEME.success},stroke:${THEME.success},color:white,stroke-width:2px`;
+            else if (status === 'REJECTED') def += `\n    style ${currentState} fill:${THEME.error},stroke:${THEME.error},color:white,stroke-width:2px`;
+            else def += `\n    style ${currentState} fill:${THEME.primary},stroke:#c2410c,color:white,stroke-width:3px`;
 
             if (activeEdgeIndex !== null) {
-                def += `\n    linkStyle ${activeEdgeIndex} stroke:${THEME.colors.primary},stroke-width:3px;`;
+                def += `\n    linkStyle ${activeEdgeIndex} stroke:${THEME.primary},stroke-width:3px;`;
+            } else {
+                def += `\n    linkStyle default stroke:${THEME.stroke},stroke-width:1px;`;
             }
 
             return def;
         };
 
-        const formatStateLabel = (name) => {
-            if (name === 'ha') return 'h<sub>a</sub>';
-            const match = name.match(/^q(\d+)$/);
-            return match ? `q<sub>${match[1]}</sub>` : name;
-        };
-
         /**
-         * Aplica correções manuais no SVG gerado pelo Mermaid (ex: cor da seta).
+         * Pós-processamento de SVG para colorir setas e labels.
+         * Necessário porque o Mermaid com htmlLabels:false não suporta estilos inline de texto.
          */
-        const applySvgPostProcessing = (container, activeColor) => {
+        const applySvgPostProcessing = (container, activeColor, activeEdgeIndex, activeRuleLabel) => {
             const svgElem = container.querySelector('svg');
             if (!svgElem) return;
 
+            // Fix Zoom Bug
+            svgElem.style.maxWidth = 'none';
+            svgElem.style.height = '100%';
+
+            // 1. Colorir Arrowheads (Marcadores)
             const links = svgElem.querySelectorAll('path');
             links.forEach(link => {
                 const style = link.getAttribute('style') || '';
-                // Detecta a linha ativa pela cor injetada pelo linkStyle
-                // Mermaid converte hex para rgb em alguns casos
+                // Identifica aresta ativa pela cor do stroke
                 if (style.includes(activeColor) || style.includes('rgb(234, 88, 12)')) {
                     const markerUrl = link.getAttribute('marker-end');
                     if (markerUrl) {
@@ -210,15 +241,13 @@ q0  _/_,S  ha`;
                         if (markerIdMatch && markerIdMatch[1]) {
                             const markerId = markerIdMatch[1];
                             const originalMarker = svgElem.getElementById(markerId);
-                            
                             if (originalMarker) {
-                                // Clona o marcador para não pintar todas as setas
+                                // Clona marcador para não afetar outras setas
                                 const newMarkerId = markerId + '-active-' + Date.now();
                                 const newMarker = originalMarker.cloneNode(true);
                                 newMarker.setAttribute('id', newMarkerId);
                                 
-                                const paths = newMarker.querySelectorAll('path, circle, polygon');
-                                paths.forEach(p => {
+                                newMarker.querySelectorAll('path, circle, polygon').forEach(p => {
                                     p.setAttribute('fill', activeColor);
                                     p.setAttribute('stroke', activeColor);
                                 });
@@ -230,9 +259,28 @@ q0  _/_,S  ha`;
                     }
                 }
             });
+
+            // 2. Colorir Label Específico
+            if (activeEdgeIndex !== null && activeRuleLabel) {
+                const edgeLabels = svgElem.querySelectorAll('.edgeLabel');
+                if (edgeLabels[activeEdgeIndex]) {
+                    const labelGroup = edgeLabels[activeEdgeIndex];
+                    const tspans = labelGroup.querySelectorAll('tspan');
+                    tspans.forEach(tspan => {
+                        if (tspan.textContent.trim() === activeRuleLabel.trim()) {
+                            tspan.setAttribute('fill', activeColor);
+                            tspan.setAttribute('font-weight', 'bold');
+                            tspan.style.fill = activeColor;
+                            tspan.style.fontWeight = 'bold';
+                        }
+                    });
+                }
+            }
         };
 
-        // --- COMPONENTES UI ---
+        // ==========================================
+        // COMPONENTES DE UI (MEMOIZED)
+        // ==========================================
 
         const Icons = {
             Play: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>,
@@ -247,7 +295,6 @@ q0  _/_,S  ha`;
             Cpu: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>,
             Code: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>,
             Terminal: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>,
-            // Ícone de Upload (Seta para cima)
             InputLoad: (props) => <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
         };
 
@@ -258,7 +305,7 @@ q0  _/_,S  ha`;
                         <div className="bg-indigo-600 text-white p-1.5 rounded-lg shadow-sm">
                             <Icons.Cpu size={20} />
                         </div>
-                        <h1 className="text-lg font-bold text-slate-800 tracking-tight">TM Simulator</h1>
+                        <h1 className="text-lg font-bold text-slate-800 tracking-tight">Simulador de Máquina de Turing</h1>
                     </div>
                     <div className="flex items-center gap-3">
                         {status === 'ACCEPTED' && <span className="flex items-center gap-2 text-emerald-700 font-bold px-3 py-1 bg-emerald-100 border border-emerald-200 rounded-full text-xs animate-in fade-in"><Icons.CheckCircle2 size={16}/> ACEITA</span>}
@@ -278,24 +325,17 @@ q0  _/_,S  ha`;
         ));
 
         const TapeVisualizer = memo(({ tape, head, status }) => {
-            // Constantes de layout
-            const CELL_WIDTH = 56;
-            const CELL_MARGIN = 8;
-            const TOTAL_CELL_WIDTH = CELL_WIDTH + CELL_MARGIN;
-            const CENTER_OFFSET = TOTAL_CELL_WIDTH / 2; // Centralizar
+            const TOTAL_CELL_WIDTH = CONFIG.TAPE_CELL_WIDTH + CONFIG.TAPE_CELL_MARGIN;
+            const CENTER_OFFSET = TOTAL_CELL_WIDTH / 2;
 
             return (
                 <div className="relative w-full bg-slate-100/50 h-28 border-b border-slate-200 shadow-inner overflow-hidden">
-                    {/* Efeitos de Fading */}
                     <div className="absolute left-0 top-0 bottom-0 w-24 z-20 bg-gradient-to-r from-slate-100 to-transparent pointer-events-none"/>
                     <div className="absolute right-0 top-0 bottom-0 w-24 z-20 bg-gradient-to-l from-slate-100 to-transparent pointer-events-none"/>
-                    
-                    {/* Ponteiro Fixo */}
                     <div className="absolute top-0 left-1/2 -translate-x-1/2 z-30 text-indigo-500 drop-shadow-md mt-1">
                         <Icons.TriangleDown width="24" height="12" />
                     </div>
 
-                    {/* Fita Móvel */}
                     <div 
                         className="flex items-center h-full absolute top-0 left-1/2 transition-transform duration-300 ease-in-out tape-container"
                         style={{ transform: `translateX(calc(-${head * TOTAL_CELL_WIDTH}px - ${CENTER_OFFSET}px))` }}
@@ -312,7 +352,7 @@ q0  _/_,S  ha`;
                             }
 
                             return (
-                                <div key={idx} className="flex flex-col items-center justify-center shrink-0 mr-2" style={{ width: '56px' }}>
+                                <div key={idx} className="flex flex-col items-center justify-center shrink-0 mr-2" style={{ width: `${CONFIG.TAPE_CELL_WIDTH}px` }}>
                                     <div className={`tape-cell rounded-xl flex items-center justify-center text-2xl font-mono font-medium border-2 ${stateStyle}`}>
                                         {char === '_' ? <span className="opacity-20">Δ</span> : char}
                                     </div>
@@ -383,7 +423,7 @@ q0  _/_,S  ha`;
             const lastPos = useRef({ x: 0, y: 0 });
             const lastDist = useRef(null);
 
-            // Handlers de Zoom e Pan (Mesma lógica robusta)
+            // Handlers de Zoom e Pan
             const handleWheel = (e) => {
                 e.preventDefault();
                 if (!containerRef.current) return;
@@ -439,14 +479,12 @@ q0  _/_,S  ha`;
 
             const handleTouchEnd = () => { isDragging.current = false; lastDist.current = null; };
 
-            // Efeito para Renderização do Mermaid
             useEffect(() => {
                 if (visualData.nodes.length > 0 && diagramRef.current) {
                     const render = async () => {
                         try {
-                            // 1. Determinar estado ativo
-                            let activeLabel = null;
                             let activeEdgeIndex = null;
+                            let activeLabel = null;
 
                             if (status !== 'ACCEPTED' && status !== 'REJECTED') {
                                 const currentSymbol = tape[head] || '_';
@@ -458,23 +496,19 @@ q0  _/_,S  ha`;
                                 }
                             }
 
-                            // 2. Gerar Definição Mermaid
                             const mermaidDef = generateMermaidDefinition(
                                 visualData.nodes, 
                                 visualData.edges, 
                                 currentState, 
                                 status, 
-                                activeEdgeIndex, 
-                                activeLabel
+                                activeEdgeIndex
                             );
 
-                            // 3. Renderizar SVG
                             diagramRef.current.removeAttribute('data-processed');
                             const { svg } = await mermaid.render('mermaid-svg-' + Date.now(), mermaidDef);
                             diagramRef.current.innerHTML = svg;
 
-                            // 4. Pós-processamento (Colorir Arrowheads)
-                            applySvgPostProcessing(diagramRef.current, THEME.colors.primary);
+                            applySvgPostProcessing(diagramRef.current, THEME.primary, activeEdgeIndex, activeLabel);
 
                         } catch (e) {
                             console.error("Mermaid Render Error:", e);
@@ -490,7 +524,7 @@ q0  _/_,S  ha`;
                         className="flex-1 overflow-hidden relative cursor-grab active:cursor-grabbing bg-fixed touch-none select-none [&_*]:cursor-inherit"
                         style={{
                             backgroundImage: 'radial-gradient(#cbd5e1 1px, transparent 1px)',
-                            backgroundSize: '24px 24px' // Ajustado para um grid mais agradável
+                            backgroundSize: '24px 24px'
                         }}
                         onWheel={handleWheel} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
                         onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}
@@ -547,7 +581,6 @@ q0  _/_,S  ha`;
             const [isDirty, setIsDirty] = useState(false);
             const [inputString, setInputString] = useState('10110');
             
-            // Estado da Máquina
             const [tape, setTape] = useState({});
             const [head, setHead] = useState(0);
             const [currentState, setCurrentState] = useState('q0');
@@ -556,19 +589,17 @@ q0  _/_,S  ha`;
             const [runtimeError, setRuntimeError] = useState(null);
             const [history, setHistory] = useState([]);
             
-            // Estado de Execução
             const [speed, setSpeed] = useState(500);
             const [transitions, setTransitions] = useState({});
             const [visualData, setVisualData] = useState({ nodes: [], edges: [] });
             const [compileError, setCompileError] = useState(null);
 
-            // Configuração Mermaid
             useEffect(() => {
                 mermaid.initialize({
                     startOnLoad: false,
                     theme: 'base',
                     securityLevel: 'loose',
-                    flowchart: { curve: 'basis', htmlLabels: true, useMaxWidth: false },
+                    flowchart: { curve: 'basis', htmlLabels: false, useMaxWidth: false },
                     themeVariables: {
                         primaryColor: '#e0e7ff',
                         primaryTextColor: '#312e81',
@@ -578,8 +609,8 @@ q0  _/_,S  ha`;
                         tertiaryColor: '#fff',
                     }
                 });
-                compileAndReset(); // Compilação inicial
-            }, []); // Rodar apenas na montagem
+                compileAndReset(); 
+            }, []); 
 
             const handleEditorChange = useCallback((val) => {
                 setEditorCode(val);
@@ -596,7 +627,6 @@ q0  _/_,S  ha`;
                     setCompileError(null);
                     setIsDirty(false);
 
-                    // Reset Machine
                     const initialTape = {};
                     for (let i = 0; i < inputString.length; i++) initialTape[i] = inputString[i];
                     setTape(initialTape);
@@ -640,7 +670,7 @@ q0  _/_,S  ha`;
                         setStatus('REJECTED');
                         setRuntimeError(`Sem transição para (${currentState}, ${currentSymbol})`);
                     }
-                    setHistory(prev => [...prev.slice(-MAX_HISTORY), historyState]);
+                    setHistory(prev => [...prev.slice(-CONFIG.MAX_HISTORY), historyState]);
                     return;
                 }
 
@@ -655,7 +685,7 @@ q0  _/_,S  ha`;
                 if (newHead < 0) {
                     setStatus('REJECTED');
                     setRuntimeError("Crash: Limite esquerdo da fita.");
-                    setHistory(prev => [...prev.slice(-MAX_HISTORY), historyState]);
+                    setHistory(prev => [...prev.slice(-CONFIG.MAX_HISTORY), historyState]);
                     return;
                 }
 
@@ -663,7 +693,7 @@ q0  _/_,S  ha`;
                 setHead(newHead);
                 setStepCount(c => c + 1);
                 setCurrentState(rule.to);
-                setHistory(prev => [...prev.slice(-MAX_HISTORY), historyState]);
+                setHistory(prev => [...prev.slice(-CONFIG.MAX_HISTORY), historyState]);
 
                 if (rule.to === 'ha') setStatus('ACCEPTED');
             }, [tape, head, currentState, status, transitions, stepCount]);
