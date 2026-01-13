@@ -24,16 +24,40 @@ const TapeVisualizer = memo(({ tape, head, status, onCellClick }) => {
         setIsDragging(true);
     };
 
+    const handleEnd = () => {
+        if (!dragRef.current.isDown) return;
+        dragRef.current.isDown = false;
+
+        if (dragRef.current.hasMoved) {
+            const currentOffset = dragRef.current.startOffset + (dragRef.current.lastClientX - dragRef.current.startX);
+            // Calculate how many cells we drifted (negative because creating positive offset moves view right, which lowers index relative to center)
+            // Wait: offset > 0 (moved right). View shifts right. Pointer (center) stays. Loop moves right.
+            // Items shift right. item[0] moves right. 
+            // transform: -head*W + offset. 
+            // If offset = +W. transform = -(head)*W + W = -(head-1)*W.
+            // Visually looks like head-1 is at center.
+            // So newHead = head - round(offset / W).
+
+            const cellsMoved = Math.round(currentOffset / TOTAL_CELL_WIDTH);
+            let newHead = head - cellsMoved;
+            if (newHead < 0) newHead = 0;
+
+            if (newHead !== head) {
+                onCellClick(newHead);
+            } else {
+                setDragOffset(0); // Snap back if didn't move enough to change cell
+            }
+        }
+
+        setIsDragging(false);
+    };
+
     const handleMove = (clientX) => {
         if (!dragRef.current.isDown) return;
+        dragRef.current.lastClientX = clientX; // Track last position for end calculation
         const delta = clientX - dragRef.current.startX;
         if (Math.abs(delta) > 5) dragRef.current.hasMoved = true;
         setDragOffset(dragRef.current.startOffset + delta);
-    };
-
-    const handleEnd = () => {
-        dragRef.current.isDown = false;
-        setIsDragging(false);
     };
 
     const handleCellClickInternal = (idx) => {
