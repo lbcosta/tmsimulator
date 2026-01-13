@@ -28,7 +28,7 @@ function App() {
   const [history, setHistory] = useState([]);
 
   // Control State
-  const [activeInput, setActiveInput] = useState('10110');
+  const [activeInput, setActiveInput] = useState('abba');
   const [speed, setSpeed] = useState(500);
   const [transitions, setTransitions] = useState({});
   const [visualData, setVisualData] = useState({ nodes: [], edges: [] });
@@ -36,9 +36,10 @@ function App() {
 
   // Test Suite State
   const [tests, setTests] = useState([
-    { id: 1, input: '10110', status: 'IDLE' },
-    { id: 2, input: '00000', status: 'IDLE' },
-    { id: 3, input: '11111', status: 'IDLE' }
+    { id: 1, input: 'abba', status: 'IDLE' },
+    { id: 2, input: 'bab', status: 'IDLE' },
+    { id: 3, input: 'aabaab', status: 'IDLE' },
+    { id: 4, input: 'aabb', status: 'IDLE' }
   ]);
   const [isRunningBatch, setIsRunningBatch] = useState(false);
 
@@ -46,11 +47,7 @@ function App() {
     mermaid.initialize({
       startOnLoad: false,
       theme: 'base',
-      flowchart: { curve: 'basis', htmlLabels: false },
-      themeVariables: {
-        edgeLabelBackground: '#ffffff',
-        tertiaryColor: '#f1f5f9'
-      }
+      flowchart: { curve: 'basis', htmlLabels: false }
     });
     compileAndReset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
