@@ -139,7 +139,7 @@ const DiagramVisualizer = ({ visualData, currentState, transitions, status, comp
             fontFamily: 'Fira Code, monospace',
             flowchart: {
                 htmlLabels: false,
-                curve: 'linear',
+                curve: 'basis',
             },
             themeVariables: {
                 mainBkg: '#ffffff',
